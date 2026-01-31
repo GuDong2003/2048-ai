@@ -2,10 +2,13 @@
  * ai_bridge.cpp - Clean C API for 2048 AI engine
  * Based on nneonneo/2048-ai, compiled as shared library for Python ctypes
  * No stdout output - safe for IPC usage
+ *
+ * This is a faithful port of the original 2048-ai algorithm.
  */
 
 #include <cmath>
 #include <stdint.h>
+#include <stdlib.h>
 #include <algorithm>
 
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -29,6 +32,7 @@ static const float SCORE_SUM_WEIGHT = 11.0f;
 static const float SCORE_MERGES_WEIGHT = 700.0f;
 static const float SCORE_EMPTY_WEIGHT = 270.0f;
 
+// Statistics and controls
 static const float CPROB_THRESH_BASE = 0.0001f;
 static const int CACHE_DEPTH_LIMIT = 15;
 
@@ -123,7 +127,7 @@ static inline int get_max_rank(board_t board) {
 // Table initialization (identical to nneonneo/2048-ai)
 // ============================================================================
 
-static void do_init_tables() {
+static void init_tables() {
     for (unsigned row = 0; row < 65536; ++row) {
         unsigned line[4] = {
             (row >> 0) & 0xf,
@@ -150,7 +154,7 @@ static void do_init_tables() {
         int counter = 0;
         for (int i = 0; i < 4; ++i) {
             int rank = line[i];
-            sum += pow((float)rank, SCORE_SUM_POWER);
+            sum += pow(rank, SCORE_SUM_POWER);
             if (rank == 0) {
                 empty++;
             } else {
@@ -171,11 +175,11 @@ static void do_init_tables() {
         float monotonicity_right = 0;
         for (int i = 1; i < 4; ++i) {
             if (line[i - 1] > line[i]) {
-                monotonicity_left += pow((float)line[i - 1], SCORE_MONOTONICITY_POWER) -
-                                     pow((float)line[i], SCORE_MONOTONICITY_POWER);
+                monotonicity_left += pow(line[i - 1], SCORE_MONOTONICITY_POWER) -
+                                     pow(line[i], SCORE_MONOTONICITY_POWER);
             } else {
-                monotonicity_right += pow((float)line[i], SCORE_MONOTONICITY_POWER) -
-                                      pow((float)line[i - 1], SCORE_MONOTONICITY_POWER);
+                monotonicity_right += pow(line[i], SCORE_MONOTONICITY_POWER) -
+                                      pow(line[i - 1], SCORE_MONOTONICITY_POWER);
             }
         }
 
@@ -259,7 +263,7 @@ static inline board_t execute_move_3(board_t board) {
     return ret;
 }
 
-static board_t do_execute_move(int move, board_t board) {
+static board_t execute_move(int move, board_t board) {
     switch (move) {
         case 0: return execute_move_0(board);
         case 1: return execute_move_1(board);
@@ -285,7 +289,7 @@ static float score_heur_board(board_t board) {
            score_helper(transpose(board), heur_score_table);
 }
 
-static float do_score_board(board_t board) {
+static float score_board(board_t board) {
     return score_helper(board, score_table);
 }
 
@@ -302,7 +306,7 @@ static float score_tilechoose_node(eval_state &state, board_t board, float cprob
         return score_heur_board(board);
     }
     if (state.curdepth < CACHE_DEPTH_LIMIT) {
-        const auto &i = state.trans_table.find(board);
+        const trans_table_t::iterator &i = state.trans_table.find(board);
         if (i != state.trans_table.end()) {
             trans_table_entry_t entry = i->second;
             if (entry.depth <= state.curdepth) {
@@ -340,7 +344,7 @@ static float score_move_node(eval_state &state, board_t board, float cprob) {
     float best = 0.0f;
     state.curdepth++;
     for (int move = 0; move < 4; ++move) {
-        board_t newboard = do_execute_move(move, board);
+        board_t newboard = execute_move(move, board);
         state.moves_evaled++;
         if (board != newboard) {
             best = std::max(best, score_tilechoose_node(state, newboard, cprob));
@@ -350,8 +354,9 @@ static float score_move_node(eval_state &state, board_t board, float cprob) {
     return best;
 }
 
-static float internal_score_toplevel_move(eval_state &state, board_t board, int move) {
-    board_t newboard = do_execute_move(move, board);
+// Score a single top-level move (creates fresh eval_state like the original)
+static float _score_toplevel_move(eval_state &state, board_t board, int move) {
+    board_t newboard = execute_move(move, board);
     if (board == newboard)
         return 0;
     return score_tilechoose_node(state, newboard, 1.0f) + 1e-6;
@@ -364,18 +369,21 @@ static float internal_score_toplevel_move(eval_state &state, board_t board, int 
 extern "C" {
 
 DLL_EXPORT void ai_init() {
-    do_init_tables();
+    init_tables();
 }
 
+// Find the best move - creates fresh eval_state for EACH move evaluation
+// This matches the original nneonneo/2048-ai behavior exactly
 DLL_EXPORT int ai_find_best_move(uint64_t board) {
-    eval_state state;
-    state.depth_limit = std::max(3, count_distinct_tiles(board) - 2);
-
     float best = 0;
     int bestmove = -1;
 
+    // Evaluate each move with a FRESH eval_state (matching original)
     for (int move = 0; move < 4; move++) {
-        float res = internal_score_toplevel_move(state, board, move);
+        eval_state state;
+        state.depth_limit = std::max(3, count_distinct_tiles(board) - 2);
+
+        float res = _score_toplevel_move(state, board, move);
         if (res > best) {
             best = res;
             bestmove = move;
@@ -385,40 +393,51 @@ DLL_EXPORT int ai_find_best_move(uint64_t board) {
     return bestmove;
 }
 
-// Extended version: returns move + stats via output parameters
+// Extended version: returns move + aggregated stats
 DLL_EXPORT int ai_find_best_move_ex(uint64_t board,
                                      int* out_depth,
                                      unsigned long* out_evals,
                                      int* out_cachehits,
                                      int* out_maxdepth) {
-    eval_state state;
-    state.depth_limit = std::max(3, count_distinct_tiles(board) - 2);
-
     float best = 0;
     int bestmove = -1;
+    int total_depth = 0;
+    unsigned long total_evals = 0;
+    int total_cachehits = 0;
+    int max_maxdepth = 0;
 
+    // Evaluate each move with a FRESH eval_state (matching original)
     for (int move = 0; move < 4; move++) {
-        float res = internal_score_toplevel_move(state, board, move);
+        eval_state state;
+        state.depth_limit = std::max(3, count_distinct_tiles(board) - 2);
+
+        float res = _score_toplevel_move(state, board, move);
         if (res > best) {
             best = res;
             bestmove = move;
         }
+
+        // Aggregate statistics
+        total_depth = state.depth_limit;  // Same for all moves
+        total_evals += state.moves_evaled;
+        total_cachehits += state.cachehits;
+        max_maxdepth = std::max(max_maxdepth, state.maxdepth);
     }
 
-    if (out_depth) *out_depth = state.depth_limit;
-    if (out_evals) *out_evals = state.moves_evaled;
-    if (out_cachehits) *out_cachehits = state.cachehits;
-    if (out_maxdepth) *out_maxdepth = state.maxdepth;
+    if (out_depth) *out_depth = total_depth;
+    if (out_evals) *out_evals = total_evals;
+    if (out_cachehits) *out_cachehits = total_cachehits;
+    if (out_maxdepth) *out_maxdepth = max_maxdepth;
 
     return bestmove;
 }
 
 DLL_EXPORT uint64_t ai_execute_move(int move, uint64_t board) {
-    return do_execute_move(move, board);
+    return execute_move(move, board);
 }
 
 DLL_EXPORT float ai_score_board(uint64_t board) {
-    return do_score_board(board);
+    return score_board(board);
 }
 
 DLL_EXPORT float ai_score_heur_board(uint64_t board) {

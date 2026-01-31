@@ -142,7 +142,7 @@ class AIManager:
                 [str(python_path), str(worker_script)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=None,  # 直接输出到终端，方便调试
                 text=True,
                 bufsize=1,
                 env=env
@@ -397,14 +397,13 @@ class MainWindow(QMainWindow):
         self.auto_restart = False
         self.current_move_arrow = '-'
         self.next_move_arrow = '-'
-        self._move_cooldown = False  # 移动冷却标志，防止 invalid move
         self._last_board = None  # 上一次的棋盘状态
-        self._move_check_count = 0  # 棋盘变化检测次数
+        self._step_active = False  # 当前是否有步骤在执行
 
-        # 游戏循环定时器
-        self.game_timer = QTimer(self)
-        self.game_timer.timeout.connect(self.game_loop)
-        self.game_loop_interval = 50  # ms (轮询间隔)
+        # AI 结果轮询定时器（仅在等待 AI 计算时启动）
+        self._ai_poll_timer = QTimer(self)
+        self._ai_poll_timer.timeout.connect(self._step_poll_result)
+        self._ai_poll_timer.setInterval(20)  # 20ms 轮询 AI 结果
 
         # 控制轮询定时器（检测 JS 端按钮点击）
         self.control_timer = QTimer(self)
@@ -616,6 +615,7 @@ class MainWindow(QMainWindow):
             return
 
         self.ai_running = True
+        self._step_active = False
         self.status_label.setText(f"AI 启动中，正在初始化...")
 
         # 更新 JS 端状态
@@ -626,8 +626,8 @@ class MainWindow(QMainWindow):
 
         self.status_label.setText("AI 运行中")
 
-        # 启动游戏循环
-        self.game_timer.start(self.game_loop_interval)
+        # 启动第一步
+        self._step_start()
 
     def stop_ai(self, reason="用户停止"):
         """停止 AI"""
@@ -635,7 +635,8 @@ class MainWindow(QMainWindow):
             return
 
         self.ai_running = False
-        self.game_timer.stop()
+        self._step_active = False
+        self._ai_poll_timer.stop()
         self.status_label.setText(f"AI 已停止: {reason}")
 
         # 更新 JS 端状态
@@ -645,80 +646,96 @@ class MainWindow(QMainWindow):
         """自动续开关切换"""
         self.auto_restart = enabled
 
-    def game_loop(self):
-        """游戏主循环"""
-        if not self.ai_running:
-            return
+    # =========================================================================
+    # 链式游戏循环：每一步完成后才触发下一步
+    #   _step_start → _step_check_game_over → _step_read_board
+    #   → _step_submit_ai → _step_poll_result → _step_execute_move
+    #   → _step_wait_board_change → _step_start（循环）
+    # =========================================================================
 
-        # 等待移动冷却结束（防止 invalid move）
-        if self._move_cooldown:
+    def _step_start(self):
+        """步骤1: 开始新一轮 - 检查游戏状态"""
+        if not self.ai_running or self._step_active:
             return
+        self._step_active = True
 
-        # 检查是否有计算结果
-        result = self.ai_manager.get_result()
-        if result:
-            self.on_move_ready(result)
-            return
-
-        # 如果有任务在执行，等待
-        if self.ai_manager.is_busy():
-            return
-
-        # 检查游戏状态
         self.page.runJavaScript(
             "window._aiBridge ? window._aiBridge.isGameOver() : false",
-            self.on_game_state_checked
+            self._step_check_game_over
         )
 
-    def on_game_state_checked(self, is_game_over):
-        """游戏状态检查完成"""
+    def _step_check_game_over(self, is_game_over):
+        """步骤2: 检查游戏是否结束"""
         if not self.ai_running:
+            self._step_active = False
             return
 
         if is_game_over:
+            self._step_active = False
             self.on_game_over()
             return
 
-        # 读取棋盘
+        # 继续：读取棋盘
         self.page.runJavaScript(
             "window._aiBridge ? window._aiBridge.getBoard() : null",
-            self.on_board_received
+            self._step_read_board
         )
 
-    def on_board_received(self, board_json):
-        """收到棋盘数据，提交给子进程计算"""
+    def _step_read_board(self, board_json):
+        """步骤3: 读取棋盘并提交 AI 计算"""
         if not self.ai_running or not board_json:
+            self._step_active = False
             return
 
         try:
             board = json.loads(board_json)
-            if board:
-                # 保存当前棋盘用于后续比较
-                self._last_board = board
-                self.ai_manager.submit_task(board)
+            if not board:
+                self._step_active = False
+                return
+
+            self._last_board = board
+            self.ai_manager.submit_task(board)
+
+            # 启动 AI 结果轮询
+            self._ai_poll_timer.start()
+
         except Exception as e:
             print(f"[Main] 处理棋盘失败: {e}")
+            self._step_active = False
 
-    def on_move_ready(self, result):
-        """AI 计算完成，先验证再执行"""
+    def _step_poll_result(self):
+        """步骤4: 轮询 AI 计算结果"""
         if not self.ai_running:
+            self._ai_poll_timer.stop()
+            self._step_active = False
             return
+
+        result = self.ai_manager.get_result()
+        if not result:
+            return  # 继续轮询
+
+        # 收到结果，停止轮询
+        self._ai_poll_timer.stop()
 
         move_name = result.get('move_name')
         if move_name is None:
+            # 无有效移动（游戏可能结束）
+            self._step_active = False
+            self._step_start()
             return
 
-        # 保存结果，等验证通过后执行
+        # 保存结果，进入验证步骤
         self._pending_result = result
+        self._step_validate_move(move_name)
 
-        # 重新读取当前棋盘，验证该方向是否有效
+    def _step_validate_move(self, move_name):
+        """步骤5: 重新读取棋盘验证移动是否有效"""
         self.page.runJavaScript(
             f"""(function() {{
                 var b = window._aiBridge;
                 if (!b) return null;
                 var board = JSON.parse(b.getBoard());
                 if (!board) return null;
-                // 模拟移动，检查是否有效
                 var copy = board.map(function(r) {{ return r.slice(); }});
                 var moved = false;
                 var dir = '{move_name}';
@@ -758,27 +775,41 @@ class MainWindow(QMainWindow):
                         }}
                     }}
                 }}
-                return moved;
+                return {{valid: moved, board: board}};
             }})()""",
-            self._on_move_validated
+            self._step_on_validated
         )
 
-    def _on_move_validated(self, is_valid):
-        """移动验证结果"""
+    def _step_on_validated(self, result):
+        """步骤5b: 验证结果处理"""
         if not self.ai_running or not self._pending_result:
+            self._step_active = False
             return
 
-        if not is_valid:
-            # 方向无效，丢弃结果，重新读取棋盘计算
+        if not result or not result.get('valid'):
+            # 无效移动，用最新棋盘重新计算
             print(f"[Main] 方向 {self._pending_result.get('move_name')} 无效，重新计算")
             self._pending_result = None
-            self.page.runJavaScript(
-                "window._aiBridge ? window._aiBridge.getBoard() : null",
-                self.on_board_received
-            )
+            current_board = result.get('board') if result else None
+            if current_board:
+                self._last_board = current_board
+                self.ai_manager.submit_task(current_board)
+                self._ai_poll_timer.start()
+            else:
+                self._step_active = False
+                QTimer.singleShot(50, self._step_start)
             return
 
+        # 更新 _last_board 为验证时的最新棋盘
+        current_board = result.get('board')
+        if current_board:
+            self._last_board = current_board
+
         # 验证通过，执行移动
+        self._step_execute_move()
+
+    def _step_execute_move(self):
+        """步骤6: 执行移动"""
         result = self._pending_result
         self._pending_result = None
 
@@ -786,10 +817,6 @@ class MainWindow(QMainWindow):
         move_arrow = result.get('move_arrow', '-')
         depth = result.get('depth', 0)
         time_ms = result.get('time_ms', 0)
-
-        # 设置移动冷却
-        self._move_cooldown = True
-        self._move_check_count = 0
 
         # 更新显示
         prev_move = self.current_move_arrow
@@ -810,47 +837,49 @@ class MainWindow(QMainWindow):
             f"AI 运行中 | {move_arrow} | 深度:{depth} | 耗时:{time_ms:.0f}ms"
         )
 
-        # 开始检测棋盘变化
-        QTimer.singleShot(50, self._check_board_changed)
+        # 等待动画完成后检测棋盘变化
+        self._board_check_count = 0
+        QTimer.singleShot(80, self._step_wait_board_change)
 
-    def _check_board_changed(self):
-        """检测棋盘是否变化"""
+    def _step_wait_board_change(self):
+        """步骤7: 等待棋盘变化（确认移动已执行）"""
         if not self.ai_running:
-            self._move_cooldown = False
+            self._step_active = False
             return
 
-        self._move_check_count += 1
+        self._board_check_count += 1
 
-        # 超过最大检测次数（500ms），强制解除冷却
-        if self._move_check_count >= 10:
-            self._move_cooldown = False
+        # 超时保护（最多等 1 秒）
+        if self._board_check_count >= 15:
+            self._step_active = False
+            QTimer.singleShot(0, self._step_start)
             return
 
         # 读取当前棋盘
         self.page.runJavaScript(
             "window._aiBridge ? window._aiBridge.getBoard() : null",
-            self._on_board_check_received
+            self._step_on_board_checked
         )
 
-    def _on_board_check_received(self, board_json):
-        """检测棋盘变化结果"""
+    def _step_on_board_checked(self, board_json):
+        """步骤7b: 检查棋盘是否已变化"""
         if not self.ai_running:
-            self._move_cooldown = False
+            self._step_active = False
             return
 
         try:
             current_board = json.loads(board_json) if board_json else None
             if current_board and self._last_board:
-                # 比较棋盘是否变化
                 if current_board != self._last_board:
-                    # 棋盘已变化，解除冷却
-                    self._move_cooldown = False
+                    # 棋盘已变化 → 移动成功，开始下一轮
+                    self._step_active = False
+                    QTimer.singleShot(0, self._step_start)
                     return
         except:
             pass
 
-        # 棋盘未变化，继续检测
-        QTimer.singleShot(50, self._check_board_changed)
+        # 棋盘未变化，继续等待
+        QTimer.singleShot(60, self._step_wait_board_change)
 
     def on_game_over(self):
         """游戏结束处理"""
@@ -905,7 +934,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """窗口关闭"""
         self.control_timer.stop()
-        self.game_timer.stop()
+        self._ai_poll_timer.stop()
         self.ai_manager.shutdown()
         event.accept()
 

@@ -24,22 +24,32 @@ def _find_library():
     # Try different suffixes based on platform
     suffixes = ['dylib', 'so', 'dll']
 
+    # 优先使用 ai_bridge (无打印语句，适合 IPC)
     for suffix in suffixes:
         path = os.path.join(base_dir, f'ai_bridge.{suffix}')
         if os.path.isfile(path):
-            return path
+            return path, 'bridge'
 
-    return None
+    # 备选：原版库 (有打印语句，需要重定向)
+    orig_paths = [
+        os.path.join(base_dir, '参考', '2048-ai', 'bin', '2048.so'),
+        os.path.join(base_dir, '参考', '2048-ai', 'bin', '2048.dylib'),
+    ]
+    for path in orig_paths:
+        if os.path.isfile(path):
+            return path, 'original'
+
+    return None, None
 
 
 def _load_library():
     """Load the C++ library"""
-    global _lib, _lib_path
+    global _lib, _lib_path, _lib_type
 
     if _lib is not None:
         return _lib
 
-    _lib_path = _find_library()
+    _lib_path, _lib_type = _find_library()
     if _lib_path is None:
         raise RuntimeError(
             "Cannot find ai_bridge library. "
@@ -50,41 +60,59 @@ def _load_library():
 
     _lib = ctypes.CDLL(_lib_path)
 
-    # Setup function signatures
-    _lib.ai_init.argtypes = []
-    _lib.ai_init.restype = None
+    if _lib_type == 'original':
+        # 原版库函数签名
+        _lib.init_tables.argtypes = []
+        _lib.init_tables.restype = None
 
-    _lib.ai_find_best_move.argtypes = [ctypes.c_uint64]
-    _lib.ai_find_best_move.restype = ctypes.c_int
+        _lib.find_best_move.argtypes = [ctypes.c_uint64]
+        _lib.find_best_move.restype = ctypes.c_int
 
-    _lib.ai_find_best_move_ex.argtypes = [
-        ctypes.c_uint64,
-        ctypes.POINTER(ctypes.c_int),      # out_depth
-        ctypes.POINTER(ctypes.c_ulong),    # out_evals
-        ctypes.POINTER(ctypes.c_int),      # out_cachehits
-        ctypes.POINTER(ctypes.c_int),      # out_maxdepth
-    ]
-    _lib.ai_find_best_move_ex.restype = ctypes.c_int
+        _lib.execute_move.argtypes = [ctypes.c_int, ctypes.c_uint64]
+        _lib.execute_move.restype = ctypes.c_uint64
 
-    _lib.ai_execute_move.argtypes = [ctypes.c_int, ctypes.c_uint64]
-    _lib.ai_execute_move.restype = ctypes.c_uint64
+        # 初始化表
+        _lib.init_tables()
+    else:
+        # ai_bridge 库函数签名
+        _lib.ai_init.argtypes = []
+        _lib.ai_init.restype = None
 
-    _lib.ai_score_board.argtypes = [ctypes.c_uint64]
-    _lib.ai_score_board.restype = ctypes.c_float
+        _lib.ai_find_best_move.argtypes = [ctypes.c_uint64]
+        _lib.ai_find_best_move.restype = ctypes.c_int
 
-    _lib.ai_score_heur_board.argtypes = [ctypes.c_uint64]
-    _lib.ai_score_heur_board.restype = ctypes.c_float
+        _lib.ai_find_best_move_ex.argtypes = [
+            ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_int),      # out_depth
+            ctypes.POINTER(ctypes.c_ulong),    # out_evals
+            ctypes.POINTER(ctypes.c_int),      # out_cachehits
+            ctypes.POINTER(ctypes.c_int),      # out_maxdepth
+        ]
+        _lib.ai_find_best_move_ex.restype = ctypes.c_int
 
-    _lib.ai_get_max_rank.argtypes = [ctypes.c_uint64]
-    _lib.ai_get_max_rank.restype = ctypes.c_int
+        _lib.ai_execute_move.argtypes = [ctypes.c_int, ctypes.c_uint64]
+        _lib.ai_execute_move.restype = ctypes.c_uint64
 
-    _lib.ai_count_empty.argtypes = [ctypes.c_uint64]
-    _lib.ai_count_empty.restype = ctypes.c_int
+        _lib.ai_score_board.argtypes = [ctypes.c_uint64]
+        _lib.ai_score_board.restype = ctypes.c_float
 
-    # Initialize tables
-    _lib.ai_init()
+        _lib.ai_score_heur_board.argtypes = [ctypes.c_uint64]
+        _lib.ai_score_heur_board.restype = ctypes.c_float
+
+        _lib.ai_get_max_rank.argtypes = [ctypes.c_uint64]
+        _lib.ai_get_max_rank.restype = ctypes.c_int
+
+        _lib.ai_count_empty.argtypes = [ctypes.c_uint64]
+        _lib.ai_count_empty.restype = ctypes.c_int
+
+        # 初始化表
+        _lib.ai_init()
 
     return _lib
+
+
+# Library type
+_lib_type = None
 
 
 # Load on module import
@@ -166,6 +194,7 @@ class AIEngine:
             workers: Ignored (kept for API compatibility)
         """
         self._lib = _lib
+        self._lib_type = _lib_type
 
     def get_best_move(self, grid):
         """
@@ -192,42 +221,79 @@ class AIEngine:
 
         board = board_to_int(grid)
 
-        # Call C++ function with output parameters
-        out_depth = ctypes.c_int()
-        out_evals = ctypes.c_ulong()
-        out_cachehits = ctypes.c_int()
-        out_maxdepth = ctypes.c_int()
+        if self._lib_type == 'original':
+            # 原版库：需要重定向 stdout
+            import os
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stdout = os.dup(1)
+            os.dup2(devnull, 1)
 
-        best_move = self._lib.ai_find_best_move_ex(
-            ctypes.c_uint64(board),
-            ctypes.byref(out_depth),
-            ctypes.byref(out_evals),
-            ctypes.byref(out_cachehits),
-            ctypes.byref(out_maxdepth)
-        )
+            best_move = self._lib.find_best_move(ctypes.c_uint64(board))
 
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
+            os.dup2(old_stdout, 1)
+            os.close(devnull)
+            os.close(old_stdout)
 
-        if best_move == -1:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            # 原版库不返回详细统计
+            if best_move == -1:
+                return {
+                    'move': None,
+                    'move_name': None,
+                    'move_arrow': None,
+                    'depth': 0,
+                    'time_ms': elapsed_ms,
+                    'moves_evaled': 0,
+                    'cachehits': 0
+                }
+
             return {
-                'move': None,
-                'move_name': None,
-                'move_arrow': None,
+                'move': best_move,
+                'move_name': DIRECTION_NAMES[best_move],
+                'move_arrow': DIRECTION_ARROWS[best_move],
+                'depth': 0,
+                'time_ms': elapsed_ms,
+                'moves_evaled': 0,
+                'cachehits': 0
+            }
+        else:
+            # ai_bridge 库：有详细统计
+            out_depth = ctypes.c_int()
+            out_evals = ctypes.c_ulong()
+            out_cachehits = ctypes.c_int()
+            out_maxdepth = ctypes.c_int()
+
+            best_move = self._lib.ai_find_best_move_ex(
+                ctypes.c_uint64(board),
+                ctypes.byref(out_depth),
+                ctypes.byref(out_evals),
+                ctypes.byref(out_cachehits),
+                ctypes.byref(out_maxdepth)
+            )
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            if best_move == -1:
+                return {
+                    'move': None,
+                    'move_name': None,
+                    'move_arrow': None,
+                    'depth': out_depth.value,
+                    'time_ms': elapsed_ms,
+                    'moves_evaled': out_evals.value,
+                    'cachehits': out_cachehits.value
+                }
+
+            return {
+                'move': best_move,
+                'move_name': DIRECTION_NAMES[best_move],
+                'move_arrow': DIRECTION_ARROWS[best_move],
                 'depth': out_depth.value,
                 'time_ms': elapsed_ms,
                 'moves_evaled': out_evals.value,
                 'cachehits': out_cachehits.value
             }
-
-        return {
-            'move': best_move,
-            'move_name': DIRECTION_NAMES[best_move],
-            'move_arrow': DIRECTION_ARROWS[best_move],
-            'depth': out_depth.value,
-            'time_ms': elapsed_ms,
-            'moves_evaled': out_evals.value,
-            'cachehits': out_cachehits.value
-        }
 
 
 # ============================================================================

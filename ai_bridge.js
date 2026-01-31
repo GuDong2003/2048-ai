@@ -474,7 +474,21 @@
 
         isGameOver() {
             const game = this.getGameInstance();
-            return game?.gameOver || false;
+            if (!game) return false;
+
+            // 调试：打印游戏状态
+            const state = {
+                gameOver: game.gameOver,
+                victory: game.victory,
+                over: game.over,
+                won: game.won,
+                isOver: game.isOver,
+                ended: game.ended
+            };
+            console.log('[AI Bridge] Game state:', JSON.stringify(state));
+
+            // 检查各种可能的属性名
+            return game.gameOver || game.victory || game.over || game.won || game.isOver || game.ended || false;
         },
 
         isVictory() {

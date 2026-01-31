@@ -6,7 +6,7 @@ import numpy as np
 from ai_engine import AIEngine
 
 print("[Worker] 正在初始化 AI 引擎...", file=sys.stderr, flush=True)
-engine = AIEngine()
+engine = AIEngine(parallel=False)
 print("[Worker] 引擎就绪", file=sys.stderr, flush=True)
 print("READY", flush=True)  # 通知主进程已就绪
 

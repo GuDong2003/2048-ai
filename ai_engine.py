@@ -7,6 +7,7 @@ Based on nneonneo/2048-ai, provides ~1000x faster execution than pure Python
 
 import ctypes
 import os
+import sys
 import time
 import numpy as np
 
@@ -19,7 +20,11 @@ _lib_path = None
 
 def _find_library():
     """Find the ai_bridge shared library"""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    # PyInstaller 打包后使用 _MEIPASS
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Try different suffixes based on platform
     suffixes = ['dylib', 'so', 'dll']

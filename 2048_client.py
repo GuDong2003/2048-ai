@@ -105,101 +105,62 @@ def save_feishu_threshold(threshold):
 # AI 引擎（子进程运行，避免阻塞 UI）
 # =============================================================================
 
-import subprocess
 import threading
 import queue
+from ai_engine import AIEngine
 
 
 class AIManager:
-    """AI 引擎管理器（使用子进程避免阻塞 UI）"""
+    """AI 引擎管理器（使用线程避免阻塞 UI）"""
 
     def __init__(self):
         self._initialized = False
         self._pending = False
-        self._result = None
         self._result_queue = queue.Queue()
-        self._worker_process = None
-        self._reader_thread = None
-        self._script_dir = Path(__file__).parent
-        # 预计算的下一步
-        self._next_move = None
+        self._engine = None
+        self._worker_thread = None
 
     def initialize(self):
-        """初始化 AI 子进程"""
+        """初始化 AI 引擎"""
         if self._initialized:
             return
 
         try:
-            # 启动子进程
-            worker_script = self._script_dir / "ai_worker.py"
-            python_path = self._script_dir / ".venv" / "bin" / "python3"
-
-            env = os.environ.copy()
-            env['NUMBA_NUM_THREADS'] = '1'
-            env['NUMBA_THREADING_LAYER'] = 'workqueue'
-
-            self._worker_process = subprocess.Popen(
-                [str(python_path), str(worker_script)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=None,  # 直接输出到终端，方便调试
-                text=True,
-                bufsize=1,
-                env=env
-            )
-
-            # 等待 READY 信号
-            ready_line = self._worker_process.stdout.readline().strip()
-            if ready_line == "READY":
-                self._initialized = True
-                print("[AI] 子进程引擎就绪")
-
-                # 启动读取线程
-                self._reader_thread = threading.Thread(target=self._read_results, daemon=True)
-                self._reader_thread.start()
-            else:
-                print(f"[AI] 子进程启动失败: {ready_line}")
-                self._worker_process.kill()
-                self._worker_process = None
-
+            self._engine = AIEngine()
+            self._initialized = True
+            print("[AI] 引擎就绪")
         except Exception as e:
-            print(f"[AI] 初始化子进程失败: {e}")
+            print(f"[AI] 初始化失败: {e}")
             self._initialized = False
 
-    def _read_results(self):
-        """后台线程：读取子进程输出"""
-        while self._worker_process and self._worker_process.poll() is None:
-            try:
-                line = self._worker_process.stdout.readline()
-                if line:
-                    result = json.loads(line.strip())
-                    self._result_queue.put(result)
-            except Exception as e:
-                print(f"[AI] 读取结果错误: {e}")
-                break
+    def _compute_move(self, board):
+        """后台线程：计算最佳移动"""
+        try:
+            result = self._engine.get_best_move(board)
+            self._result_queue.put(result)
+        except Exception as e:
+            print(f"[AI] 计算错误: {e}")
+            self._result_queue.put({'error': str(e), 'move': None})
 
     def submit_task(self, board):
-        """提交计算任务到子进程"""
+        """提交计算任务"""
         if not self._initialized:
             self.initialize()
-        if not self._initialized or not self._worker_process:
+        if not self._initialized:
             return None
 
         if self._pending:
             return None  # 上一个任务还没完成
 
         self._pending = True
-        self._result = None
 
-        try:
-            # 发送请求到子进程
-            request = json.dumps({'board': board})
-            self._worker_process.stdin.write(request + '\n')
-            self._worker_process.stdin.flush()
-        except Exception as e:
-            print(f"[AI] 发送请求失败: {e}")
-            self._pending = False
-            return None
+        # 在后台线程中计算
+        self._worker_thread = threading.Thread(
+            target=self._compute_move,
+            args=(board,),
+            daemon=True
+        )
+        self._worker_thread.start()
 
         return True
 
@@ -208,34 +169,17 @@ class AIManager:
         try:
             result = self._result_queue.get_nowait()
             self._pending = False
-
-            # 保存下一步预测（如果有的话）
-            if self._next_move:
-                result['next_move'] = self._next_move
-                self._next_move = None
-
             return result
         except queue.Empty:
             return None
-
-    def set_next_move(self, move_arrow):
-        """设置预计算的下一步"""
-        self._next_move = move_arrow
 
     def is_busy(self):
         """检查是否有任务在执行"""
         return self._pending
 
     def shutdown(self):
-        """清理子进程"""
-        if self._worker_process:
-            try:
-                self._worker_process.stdin.close()
-                self._worker_process.terminate()
-                self._worker_process.wait(timeout=2)
-            except:
-                self._worker_process.kill()
-            self._worker_process = None
+        """清理资源"""
+        self._engine = None
         self._initialized = False
 
 

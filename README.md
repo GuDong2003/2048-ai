@@ -1,16 +1,17 @@
 # 2048 AI Client
 
-基于 Python + Numba JIT 加速的 2048 AI 桌面客户端。
+基于 C++ 后端加速的 2048 AI 桌面客户端。
 
 ## 功能特性
 
 - **PyQt5 桌面客户端** - 内嵌浏览器运行 2048 游戏
-- **Numba JIT 加速** - AI 引擎使用 Numba 编译，计算速度快
+- **C++ 后端加速** - AI 引擎使用 C++ 实现，~1000x 快于纯 Python
 - **Expectimax 算法** - 带记忆化的期望最大搜索
 - **动态深度** - 根据局面自动调整搜索深度 (5-9)
 - **飞书推送** - 分数突破阈值时自动发送通知
 - **分数记录** - 可折叠/拖动的历史分数面板
 - **自动续玩** - 游戏结束后自动重新开始
+- **可打包分发** - 支持 PyInstaller 打包为 .app
 
 ## 安装
 
@@ -20,14 +21,23 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # 安装依赖
-pip install PyQt5 PyQtWebEngine numpy numba
+pip install PyQt5 PyQtWebEngine numpy
 ```
 
 ## 使用
 
+### 开发环境运行
+
 ```bash
-# 启动客户端
-NUMBA_NUM_THREADS=1 NUMBA_THREADING_LAYER=workqueue python3 2048_client.py
+python3 2048_client.py
+```
+
+### 打包为 macOS 应用
+
+```bash
+pip install pyinstaller
+pyinstaller --clean 2048_ai.spec
+# 生成 dist/2048 AI.app
 ```
 
 1. 输入 Cookie 并点击「应用」进行认证
@@ -38,11 +48,12 @@ NUMBA_NUM_THREADS=1 NUMBA_THREADING_LAYER=workqueue python3 2048_client.py
 
 | 文件 | 说明 |
 |------|------|
-| `2048_client.py` | PyQt5 主程序，管理 UI 和 AI 子进程 |
-| `ai_engine.py` | AI 引擎核心，Numba JIT 加速的 Expectimax |
-| `ai_worker.py` | AI 子进程，避免阻塞 UI |
+| `2048_client.py` | PyQt5 主程序 |
+| `ai_engine.py` | AI 引擎 Python 包装 |
+| `ai_bridge.cpp` | C++ AI 核心实现 |
+| `ai_bridge.dylib` | 编译后的动态库 |
 | `ai_bridge.js` | JS 桥接脚本，网页端 UI 和通信 |
-| `2048.js` | 原版 JS AI（油猴脚本，参考用） |
+| `2048_ai.spec` | PyInstaller 打包配置 |
 
 ## AI 算法
 

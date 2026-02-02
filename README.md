@@ -1,6 +1,7 @@
 # 2048 AI Client
 
 基于 C++ 后端加速的 2048 AI 桌面客户端。
+C++ 后端加速基于开源项目https://github.com/nneonneo/2048-ai
 
 ## 功能特性
 

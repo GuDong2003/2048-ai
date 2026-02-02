@@ -327,7 +327,7 @@ class GameWebPage(QWebEnginePage):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("2048 AI 客户端 (Python Numba)")
+        self.setWindowTitle("2048 AI 客户端")
         self.setMinimumSize(400, 300)
         self.resize(1000, 1100)
 

@@ -8,9 +8,36 @@ on:
 permissions:
   contents: write
 
+# 所有平台共用的 PyInstaller 排除参数
+env:
+  PYINSTALLER_EXCLUDES: >-
+    --exclude-module PyQt5.QtBluetooth
+    --exclude-module PyQt5.QtLocation
+    --exclude-module PyQt5.QtMultimedia
+    --exclude-module PyQt5.QtMultimediaWidgets
+    --exclude-module PyQt5.QtNfc
+    --exclude-module PyQt5.QtRemoteObjects
+    --exclude-module PyQt5.QtSensors
+    --exclude-module PyQt5.QtSerialPort
+    --exclude-module PyQt5.QtSql
+    --exclude-module PyQt5.QtSvg
+    --exclude-module PyQt5.QtTest
+    --exclude-module PyQt5.QtWebSockets
+    --exclude-module PyQt5.QtXmlPatterns
+    --exclude-module PyQt5.QtQuick3D
+
 jobs:
   build-macos:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: ARM64
+            compile_flags: -arch arm64
+          - runner: macos-13
+            arch: Intel
+            compile_flags: -arch x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +46,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Compile C++ AI engine
+        run: |
+          clang++ -O2 -shared -fPIC ${{ matrix.compile_flags }} \
+            -o ai_bridge.dylib ai_bridge.cpp
+
       - name: Install dependencies
         run: |
           pip install pyinstaller PyQt5 PyQtWebEngine numpy
@@ -26,14 +58,37 @@ jobs:
       - name: Build macOS app
         run: |
           pyinstaller 2048_ai.spec
+
+      - name: Cleanup unused Qt modules
+        run: |
+          APP="dist/2048 AI.app/Contents/Frameworks"
+          # QML 目录（widget 应用不需要）
+          rm -rf "$APP/PyQt5/Qt5/qml"
+          # 不需要的 frameworks
+          cd "$APP/PyQt5/Qt5/lib"
+          rm -rf QtBluetooth.framework QtConcurrent.framework \
+            QtLocation.framework QtMultimedia.framework QtMultimediaQuick.framework \
+            QtNfc.framework QtQuick3D*.framework QtQuickControls2.framework \
+            QtQuickParticles.framework QtQuickShapes.framework \
+            QtQuickTemplates2.framework QtQuickTest.framework \
+            QtRemoteObjects.framework QtSensors.framework QtSerialPort.framework \
+            QtSql.framework QtSvg.framework QtTest.framework \
+            QtWebSockets.framework QtWebView.framework QtXmlPatterns.framework \
+            QtPositioningQuick.framework QtQmlWorkerScript.framework
+          # 不需要的插件
+          cd "$APP/PyQt5/Qt5/plugins"
+          rm -rf bearer position generic printsupport
+
+      - name: Package
+        run: |
           cd dist
-          zip -r "../2048-AI-macOS.zip" "2048 AI.app"
+          zip -r "../2048-AI-macOS-${{ matrix.arch }}.zip" "2048 AI.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build
-          path: 2048-AI-macOS.zip
+          name: macos-${{ matrix.arch }}-build
+          path: 2048-AI-macOS-${{ matrix.arch }}.zip
 
   build-windows:
     runs-on: windows-latest
@@ -69,8 +124,34 @@ jobs:
             --hidden-import PyQt5.QtWidgets ^
             --hidden-import PyQt5.QtWebEngineWidgets ^
             --hidden-import PyQt5.QtNetwork ^
+            %PYINSTALLER_EXCLUDES% ^
             2048_client.py
         shell: cmd
+
+      - name: Cleanup unused Qt modules
+        run: |
+          $base = "dist\2048 AI\PyQt5\Qt5"
+          # QML 目录
+          if (Test-Path "$base\qml") { Remove-Item -Recurse -Force "$base\qml" }
+          # 不需要的 DLL
+          $unwanted = @(
+            'Qt5Bluetooth', 'Qt5DBus', 'Qt5Location', 'Qt5Multimedia',
+            'Qt5MultimediaQuick', 'Qt5Nfc', 'Qt5Quick3D*', 'Qt5QuickControls2',
+            'Qt5QuickParticles', 'Qt5QuickShapes', 'Qt5QuickTemplates2',
+            'Qt5QuickTest', 'Qt5RemoteObjects', 'Qt5Sensors', 'Qt5SerialPort',
+            'Qt5Sql', 'Qt5Svg', 'Qt5Test', 'Qt5WebSockets', 'Qt5WebView',
+            'Qt5XmlPatterns'
+          )
+          foreach ($pattern in $unwanted) {
+            Get-ChildItem -Path "$base\bin" -Filter "$pattern*.dll" -ErrorAction SilentlyContinue |
+              Remove-Item -Force
+          }
+          # 不需要的插件
+          foreach ($dir in @('bearer', 'position', 'generic', 'printsupport')) {
+            $p = "$base\plugins\$dir"
+            if (Test-Path $p) { Remove-Item -Recurse -Force $p }
+          }
+        shell: pwsh
 
       - name: Package
         run: |
@@ -83,8 +164,76 @@ jobs:
           name: windows-build
           path: 2048-AI-Windows.zip
 
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libglib2.0-0 libfontconfig1 libxcb-xinerama0 \
+            libxcb-cursor0 libxkbcommon-x11-0 libdbus-1-3 libnss3 \
+            libasound2 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
+            libxshmfence1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile C++ AI engine
+        run: |
+          g++ -O2 -shared -fPIC -o ai_bridge.so ai_bridge.cpp
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller PyQt5 PyQtWebEngine numpy
+
+      - name: Build Linux binary
+        run: |
+          pyinstaller --name "2048-AI" --windowed --noconfirm \
+            --add-binary "ai_bridge.so:." \
+            --add-data "ai_bridge.js:." \
+            --hidden-import ai_engine \
+            --hidden-import numpy \
+            --hidden-import PyQt5 \
+            --hidden-import PyQt5.QtCore \
+            --hidden-import PyQt5.QtWidgets \
+            --hidden-import PyQt5.QtWebEngineWidgets \
+            --hidden-import PyQt5.QtNetwork \
+            $PYINSTALLER_EXCLUDES \
+            2048_client.py
+
+      - name: Cleanup unused Qt modules
+        run: |
+          BASE="dist/2048-AI/PyQt5/Qt5"
+          rm -rf "$BASE/qml"
+          cd "$BASE/lib"
+          rm -f libQt5Bluetooth* libQt5DBus* libQt5Location* libQt5Multimedia* \
+            libQt5Nfc* libQt5Quick3D* libQt5QuickControls2* libQt5QuickParticles* \
+            libQt5QuickShapes* libQt5QuickTemplates2* libQt5QuickTest* \
+            libQt5RemoteObjects* libQt5Sensors* libQt5SerialPort* libQt5Sql* \
+            libQt5Svg* libQt5Test* libQt5WebSockets* libQt5WebView* \
+            libQt5XmlPatterns* libQt5PositioningQuick* libQt5QmlWorkerScript* \
+            2>/dev/null || true
+          cd "$BASE/plugins"
+          rm -rf bearer position generic printsupport 2>/dev/null || true
+
+      - name: Package
+        run: |
+          cd dist
+          tar czf "../2048-AI-Linux.tar.gz" "2048-AI"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: 2048-AI-Linux.tar.gz
+
   release:
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -134,6 +283,15 @@ jobs:
               echo "$OTHER"
               echo ""
             fi
+            echo ""
+            echo "### Downloads"
+            echo "| Platform | File |"
+            echo "|----------|------|"
+            echo "| macOS (Apple Silicon) | \`2048-AI-macOS-ARM64.zip\` |"
+            echo "| macOS (Intel) | \`2048-AI-macOS-Intel.zip\` |"
+            echo "| Windows | \`2048-AI-Windows.zip\` |"
+            echo "| Linux | \`2048-AI-Linux.tar.gz\` |"
+            echo ""
             echo "---"
             echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-$(git rev-list --max-parents=0 HEAD | head -1)}...${CURRENT_TAG}"
             echo "EOF"
@@ -144,5 +302,7 @@ jobs:
         with:
           body: ${{ steps.notes.outputs.NOTES }}
           files: |
-            artifacts/macos-build/2048-AI-macOS.zip
+            artifacts/macos-ARM64-build/2048-AI-macOS-ARM64.zip
+            artifacts/macos-Intel-build/2048-AI-macOS-Intel.zip
             artifacts/windows-build/2048-AI-Windows.zip
+            artifacts/linux-build/2048-AI-Linux.tar.gz

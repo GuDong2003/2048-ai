@@ -28,16 +28,7 @@ env:
 
 jobs:
   build-macos:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-            arch: ARM64
-            compile_flags: -arch arm64
-          - runner: macos-13
-            arch: Intel
-            compile_flags: -arch x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +39,7 @@ jobs:
 
       - name: Compile C++ AI engine
         run: |
-          clang++ -O2 -shared -fPIC ${{ matrix.compile_flags }} \
+          clang++ -O2 -shared -fPIC -arch arm64 \
             -o ai_bridge.dylib ai_bridge.cpp
 
       - name: Install dependencies
@@ -82,13 +73,13 @@ jobs:
       - name: Package
         run: |
           cd dist
-          zip -r "../2048-AI-macOS-${{ matrix.arch }}.zip" "2048 AI.app"
+          zip -r "../2048-AI-macOS-ARM64.zip" "2048 AI.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}-build
-          path: 2048-AI-macOS-${{ matrix.arch }}.zip
+          name: macos-build
+          path: 2048-AI-macOS-ARM64.zip
 
   build-windows:
     runs-on: windows-latest
@@ -291,7 +282,6 @@ jobs:
             echo "| Platform | File |"
             echo "|----------|------|"
             echo "| macOS (Apple Silicon) | \`2048-AI-macOS-ARM64.zip\` |"
-            echo "| macOS (Intel) | \`2048-AI-macOS-Intel.zip\` |"
             echo "| Windows | \`2048-AI-Windows.zip\` |"
             echo "| Linux | \`2048-AI-Linux.tar.gz\` |"
             echo ""
@@ -305,7 +295,6 @@ jobs:
         with:
           body: ${{ steps.notes.outputs.NOTES }}
           files: |
-            artifacts/macos-ARM64-build/2048-AI-macOS-ARM64.zip
-            artifacts/macos-Intel-build/2048-AI-macOS-Intel.zip
+            artifacts/macos-build/2048-AI-macOS-ARM64.zip
             artifacts/windows-build/2048-AI-Windows.zip
             artifacts/linux-build/2048-AI-Linux.tar.gz

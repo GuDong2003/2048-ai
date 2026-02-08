@@ -65,8 +65,8 @@ jobs:
           # QML 目录（widget 应用不需要）
           rm -rf "$APP/PyQt5/Qt5/qml"
           # 不需要的 frameworks
-          cd "$APP/PyQt5/Qt5/lib"
-          rm -rf QtBluetooth.framework QtConcurrent.framework \
+          cd "$APP/PyQt5/Qt5/lib" && rm -rf \
+            QtBluetooth.framework QtConcurrent.framework \
             QtLocation.framework QtMultimedia.framework QtMultimediaQuick.framework \
             QtNfc.framework QtQuick3D*.framework QtQuickControls2.framework \
             QtQuickParticles.framework QtQuickShapes.framework \
@@ -74,10 +74,10 @@ jobs:
             QtRemoteObjects.framework QtSensors.framework QtSerialPort.framework \
             QtSql.framework QtSvg.framework QtTest.framework \
             QtWebSockets.framework QtWebView.framework QtXmlPatterns.framework \
-            QtPositioningQuick.framework QtQmlWorkerScript.framework
+            QtPositioningQuick.framework QtQmlWorkerScript.framework || true
           # 不需要的插件
-          cd "$APP/PyQt5/Qt5/plugins"
-          rm -rf bearer position generic printsupport
+          rm -rf "$APP/PyQt5/Qt5/plugins/bearer" "$APP/PyQt5/Qt5/plugins/position" \
+            "$APP/PyQt5/Qt5/plugins/generic" "$APP/PyQt5/Qt5/plugins/printsupport" 2>/dev/null || true
 
       - name: Package
         run: |

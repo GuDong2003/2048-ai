@@ -1,0 +1,148 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller PyQt5 PyQtWebEngine numpy
+
+      - name: Build macOS app
+        run: |
+          pyinstaller 2048_ai.spec
+          cd dist
+          zip -r "../2048-AI-macOS.zip" "2048 AI.app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: 2048-AI-macOS.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile C++ AI engine
+        run: |
+          cl /O2 /LD /EHsc /Fe:ai_bridge.dll ai_bridge.cpp
+        shell: cmd
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller PyQt5 PyQtWebEngine numpy
+
+      - name: Build Windows exe
+        run: |
+          pyinstaller --name "2048 AI" --windowed --noconfirm ^
+            --add-binary "ai_bridge.dll;." ^
+            --add-data "ai_bridge.js;." ^
+            --hidden-import ai_engine ^
+            --hidden-import numpy ^
+            --hidden-import PyQt5 ^
+            --hidden-import PyQt5.QtCore ^
+            --hidden-import PyQt5.QtWidgets ^
+            --hidden-import PyQt5.QtWebEngineWidgets ^
+            --hidden-import PyQt5.QtNetwork ^
+            2048_client.py
+        shell: cmd
+
+      - name: Package
+        run: |
+          Compress-Archive -Path "dist\2048 AI\*" -DestinationPath "2048-AI-Windows.zip"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: 2048-AI-Windows.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # 获取上一个 tag
+          PREV_TAG=$(git tag --sort=-creatordate | sed -n '2p')
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..HEAD")
+          fi
+
+          # 分类 commit
+          FEAT=$(echo "$COMMITS" | grep -iE "^- (feat|add|新增|支持)" || true)
+          FIX=$(echo "$COMMITS" | grep -iE "^- (fix|修复|修正|增强)" || true)
+          OTHER=$(echo "$COMMITS" | grep -viE "^- (feat|add|新增|支持|fix|修复|修正|增强)" || true)
+
+          # 生成 release notes
+          {
+            echo "NOTES<<EOF"
+            echo "## ${CURRENT_TAG}"
+            echo ""
+            if [ -n "$FEAT" ]; then
+              echo "### New Features"
+              echo "$FEAT"
+              echo ""
+            fi
+            if [ -n "$FIX" ]; then
+              echo "### Bug Fixes"
+              echo "$FIX"
+              echo ""
+            fi
+            if [ -n "$OTHER" ]; then
+              echo "### Other Changes"
+              echo "$OTHER"
+              echo ""
+            fi
+            echo "---"
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-$(git rev-list --max-parents=0 HEAD | head -1)}...${CURRENT_TAG}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.notes.outputs.NOTES }}
+          files: |
+            artifacts/macos-build/2048-AI-macOS.zip
+            artifacts/windows-build/2048-AI-Windows.zip

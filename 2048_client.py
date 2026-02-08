@@ -339,10 +339,12 @@ class MainWindow(QMainWindow):
         self.ai_running = False
         self.ai_manager = AIManager()
         self.auto_restart = False
+        self.manual_merge_mode = True  # 默认开启合并暂停
         self.current_move_arrow = '-'
         self.next_move_arrow = '-'
         self._last_board = None  # 上一次的棋盘状态
         self._step_active = False  # 当前是否有步骤在执行
+        self._skip_merge_check = False  # 跳过一次合并检测（手动恢复 AI 时）
 
         # AI 结果轮询定时器（仅在等待 AI 计算时启动）
         self._ai_poll_timer = QTimer(self)
@@ -510,6 +512,8 @@ class MainWindow(QMainWindow):
         # 获取初始设置
         self.page.runJavaScript("window._aiBridge ? window._aiBridge.getAutoRestart() : false",
                                  lambda ar: self.on_auto_restart_changed(ar or False))
+        self.page.runJavaScript("window._aiBridge ? window._aiBridge.getManualMerge() : true",
+                                 lambda mm: self.on_manual_merge_changed(mm if mm is not None else True))
 
     def poll_controls(self):
         """轮询 JS 端的控制事件"""
@@ -519,12 +523,14 @@ class MainWindow(QMainWindow):
                 var ctrl = window._aiControl || {};
                 var result = {
                     startClicked: ctrl.startClicked || false,
-                    autoRestartChanged: ctrl.autoRestartChanged
+                    autoRestartChanged: ctrl.autoRestartChanged,
+                    manualMergeChanged: ctrl.manualMergeChanged
                 };
                 // 重置标志
                 if (window._aiControl) {
                     window._aiControl.startClicked = false;
                     window._aiControl.autoRestartChanged = null;
+                    window._aiControl.manualMergeChanged = null;
                 }
                 return result;
             })()
@@ -541,6 +547,10 @@ class MainWindow(QMainWindow):
         auto_restart = result.get('autoRestartChanged')
         if auto_restart is not None:
             self.on_auto_restart_changed(auto_restart)
+
+        manual_merge = result.get('manualMergeChanged')
+        if manual_merge is not None:
+            self.on_manual_merge_changed(manual_merge)
 
     # =========================================================================
     # AI 控制
@@ -560,6 +570,7 @@ class MainWindow(QMainWindow):
 
         self.ai_running = True
         self._step_active = False
+        self._skip_merge_check = True  # 手动启动时跳过一次合并检测
         self.status_label.setText(f"AI 启动中，正在初始化...")
 
         # 更新 JS 端状态
@@ -589,6 +600,22 @@ class MainWindow(QMainWindow):
     def on_auto_restart_changed(self, enabled):
         """自动续开关切换"""
         self.auto_restart = enabled
+
+    def on_manual_merge_changed(self, enabled):
+        """合并暂停开关切换"""
+        self.manual_merge_mode = enabled
+
+    def _should_pause_for_merge(self, board):
+        """检测是否进入最终合并阶段，需要暂停 AI"""
+        if not self.manual_merge_mode:
+            return False
+        required = {8192, 4096, 2048, 1024, 512, 256, 128, 64, 32}
+        tiles = set()
+        for row in board:
+            for val in row:
+                if val in required:
+                    tiles.add(val)
+        return required.issubset(tiles)
 
     # =========================================================================
     # 链式游戏循环：每一步完成后才触发下一步
@@ -638,6 +665,15 @@ class MainWindow(QMainWindow):
                 return
 
             self._last_board = board
+
+            # 检测合并暂停
+            if self._skip_merge_check:
+                self._skip_merge_check = False
+            elif self._should_pause_for_merge(board):
+                self._step_active = False
+                self.stop_ai("检测到合并阶段，已切换手动模式")
+                return
+
             self.ai_manager.submit_task(board)
 
             # 启动 AI 结果轮询

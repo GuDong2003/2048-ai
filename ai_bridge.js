@@ -15,6 +15,8 @@
         AUTO_RESTART_DELAY: 1500,
         STORAGE_KEY_SCORES: 'PythonAI_2048_ScoreHistory_v1',
         MAX_SCORE_RECORDS: 20,
+        STORAGE_KEY_MANUAL_MERGE: 'PythonAI_2048_ManualMerge_v1',
+        DEFAULT_MANUAL_MERGE: true,
     };
 
     // ===================================================================================
@@ -57,16 +59,31 @@
         saveScoreHistory([]);
     }
 
+    function safeGetManualMerge() {
+        try {
+            const v = localStorage.getItem(CONFIG.STORAGE_KEY_MANUAL_MERGE);
+            if (v === 'true') return true;
+            if (v === 'false') return false;
+        } catch (e) {}
+        return CONFIG.DEFAULT_MANUAL_MERGE;
+    }
+
+    function safeSetManualMerge(enabled) {
+        try { localStorage.setItem(CONFIG.STORAGE_KEY_MANUAL_MERGE, enabled ? 'true' : 'false'); } catch (e) {}
+    }
+
     // ===================================================================================
     // UI 控制器
     // ===================================================================================
     class UIController {
         constructor() {
             this.autoRestart = safeGetAutoRestart();
+            this.manualMerge = safeGetManualMerge();
             this.isRunning = false;
 
             this.startButton = null;
             this.autoRestartButton = null;
+            this.manualMergeButton = null;
             this.displayPanel = null;
             this.scorePanel = null;
 
@@ -99,11 +116,23 @@
             };
             this.updateAutoRestartButton();
 
+            // --- 合并暂停按钮 ---
+            this.manualMergeButton = this.createButton('ai-manual-merge-button', '', {
+                top: '114px', backgroundColor: '#6b7280'
+            });
+            this.manualMergeButton.onclick = () => {
+                this.toggleManualMerge();
+                window._aiControl = window._aiControl || {};
+                window._aiControl.manualMergeChanged = this.manualMerge;
+                console.log('[AI Bridge] Manual merge:', this.manualMerge);
+            };
+            this.updateManualMergeButton();
+
             // --- 操作显示面板 ---
             this.displayPanel = document.createElement('div');
             this.displayPanel.id = 'ai-display-panel';
             Object.assign(this.displayPanel.style, {
-                position: 'fixed', top: '114px', right: '10px', zIndex: '10000',
+                position: 'fixed', top: '166px', right: '10px', zIndex: '10000',
                 width: '140px', padding: '10px 12px',
                 backgroundColor: '#faf8ef', color: '#776e65',
                 border: '2px solid #bbada0', borderRadius: '6px',
@@ -124,14 +153,14 @@
 
             // --- 分数记录面板 ---
             this._scorePanelCollapsed = false;
-            this._scorePanelPos = { top: '238px', right: '10px', left: 'auto' };
+            this._scorePanelPos = { top: '290px', right: '10px', left: 'auto' };
 
             // 折叠时的小按钮
             this.scoreToggleBtn = document.createElement('button');
             this.scoreToggleBtn.id = 'ai-score-toggle';
             this.scoreToggleBtn.textContent = '📊';
             Object.assign(this.scoreToggleBtn.style, {
-                position: 'fixed', top: '238px', right: '10px', zIndex: '10000',
+                position: 'fixed', top: '290px', right: '10px', zIndex: '10000',
                 width: '36px', height: '36px', padding: '0',
                 fontSize: '18px', cursor: 'grab',
                 backgroundColor: '#8f7a66', color: '#f9f6f2',
@@ -178,7 +207,7 @@
             this.scorePanel = document.createElement('div');
             this.scorePanel.id = 'ai-score-panel';
             Object.assign(this.scorePanel.style, {
-                position: 'fixed', top: '238px', right: '10px', zIndex: '10000',
+                position: 'fixed', top: '290px', right: '10px', zIndex: '10000',
                 width: '240px', height: '300px', minWidth: '180px', minHeight: '80px',
                 backgroundColor: '#faf8ef', color: '#776e65',
                 border: '2px solid #bbada0', borderRadius: '6px',
@@ -351,6 +380,17 @@
         updateAutoRestartButton() {
             this.autoRestartButton.textContent = this.autoRestart ? '自动续：开' : '自动续：关';
             this.autoRestartButton.style.backgroundColor = this.autoRestart ? '#22c55e' : '#6b7280';
+        }
+
+        toggleManualMerge() {
+            this.manualMerge = !this.manualMerge;
+            safeSetManualMerge(this.manualMerge);
+            this.updateManualMergeButton();
+        }
+
+        updateManualMergeButton() {
+            this.manualMergeButton.textContent = this.manualMerge ? '合并暂停：开' : '合并暂停：关';
+            this.manualMergeButton.style.backgroundColor = this.manualMerge ? '#f59e0b' : '#6b7280';
         }
 
         setRunning(running) {
@@ -540,13 +580,15 @@
         clickRestartButton: () => uiController.clickRestartButton(),
 
         // 状态接口
-        getAutoRestart: () => uiController.autoRestart
+        getAutoRestart: () => uiController.autoRestart,
+        getManualMerge: () => uiController.manualMerge
     };
 
     // Python 端通过轮询 window._aiControl 读取按钮事件
     window._aiControl = {
         startClicked: false,
-        autoRestartChanged: null
+        autoRestartChanged: null,
+        manualMergeChanged: null
     };
 
     console.log('%c[AI Bridge] 初始化完成，等待 Python 连接...', 'color: #22c55e; font-weight: bold;');

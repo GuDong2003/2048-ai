@@ -210,16 +210,19 @@ jobs:
         run: |
           BASE="dist/2048-AI/PyQt5/Qt5"
           rm -rf "$BASE/qml"
-          cd "$BASE/lib"
-          rm -f libQt5Bluetooth* libQt5DBus* libQt5Location* libQt5Multimedia* \
-            libQt5Nfc* libQt5Quick3D* libQt5QuickControls2* libQt5QuickParticles* \
-            libQt5QuickShapes* libQt5QuickTemplates2* libQt5QuickTest* \
-            libQt5RemoteObjects* libQt5Sensors* libQt5SerialPort* libQt5Sql* \
-            libQt5Svg* libQt5Test* libQt5WebSockets* libQt5WebView* \
-            libQt5XmlPatterns* libQt5PositioningQuick* libQt5QmlWorkerScript* \
-            2>/dev/null || true
-          cd "$BASE/plugins"
-          rm -rf bearer position generic printsupport 2>/dev/null || true
+          rm -f "$BASE/lib"/libQt5Bluetooth* "$BASE/lib"/libQt5Location* \
+            "$BASE/lib"/libQt5Multimedia* "$BASE/lib"/libQt5Nfc* \
+            "$BASE/lib"/libQt5Quick3D* "$BASE/lib"/libQt5QuickControls2* \
+            "$BASE/lib"/libQt5QuickParticles* "$BASE/lib"/libQt5QuickShapes* \
+            "$BASE/lib"/libQt5QuickTemplates2* "$BASE/lib"/libQt5QuickTest* \
+            "$BASE/lib"/libQt5RemoteObjects* "$BASE/lib"/libQt5Sensors* \
+            "$BASE/lib"/libQt5SerialPort* "$BASE/lib"/libQt5Sql* \
+            "$BASE/lib"/libQt5Svg* "$BASE/lib"/libQt5Test* \
+            "$BASE/lib"/libQt5WebSockets* "$BASE/lib"/libQt5WebView* \
+            "$BASE/lib"/libQt5XmlPatterns* "$BASE/lib"/libQt5PositioningQuick* \
+            "$BASE/lib"/libQt5QmlWorkerScript* 2>/dev/null || true
+          rm -rf "$BASE/plugins/bearer" "$BASE/plugins/position" \
+            "$BASE/plugins/generic" "$BASE/plugins/printsupport" 2>/dev/null || true
 
       - name: Package
         run: |

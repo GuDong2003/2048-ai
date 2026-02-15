@@ -107,7 +107,15 @@ def save_feishu_threshold(threshold):
 
 import threading
 import queue
-from ai_engine import AIEngine
+from ai_engine import (
+    AIEngine,
+    board_to_int,
+    int_to_board,
+    execute_move,
+    score_heur_board,
+    DIRECTION_NAMES,
+    DIRECTION_ARROWS,
+)
 
 
 class AIManager:
@@ -339,12 +347,14 @@ class MainWindow(QMainWindow):
         self.ai_running = False
         self.ai_manager = AIManager()
         self.auto_restart = False
-        self.manual_merge_mode = True  # 默认开启合并暂停
+        self.score_rush_mode = True  # 默认开启：合并暂停 + 冲分
         self.current_move_arrow = '-'
         self.next_move_arrow = '-'
         self._last_board = None  # 上一次的棋盘状态
         self._step_active = False  # 当前是否有步骤在执行
         self._skip_merge_check = False  # 跳过一次合并检测（手动恢复 AI 时）
+        self._score_rush_resume_ready = False  # 首次暂停后，等待再次 Start 进入冲分
+        self._score_rush_active = False  # 冲分进行中（禁止 8192+8192 -> 16384）
 
         # AI 结果轮询定时器（仅在等待 AI 计算时启动）
         self._ai_poll_timer = QTimer(self)
@@ -512,8 +522,10 @@ class MainWindow(QMainWindow):
         # 获取初始设置
         self.page.runJavaScript("window._aiBridge ? window._aiBridge.getAutoRestart() : false",
                                  lambda ar: self.on_auto_restart_changed(ar or False))
-        self.page.runJavaScript("window._aiBridge ? window._aiBridge.getManualMerge() : true",
-                                 lambda mm: self.on_manual_merge_changed(mm if mm is not None else True))
+        self.page.runJavaScript(
+            "window._aiBridge ? (window._aiBridge.getScoreRush ? window._aiBridge.getScoreRush() : window._aiBridge.getManualMerge()) : true",
+            lambda sr: self.on_score_rush_changed(sr if sr is not None else True)
+        )
 
     def poll_controls(self):
         """轮询 JS 端的控制事件"""
@@ -524,12 +536,15 @@ class MainWindow(QMainWindow):
                 var result = {
                     startClicked: ctrl.startClicked || false,
                     autoRestartChanged: ctrl.autoRestartChanged,
-                    manualMergeChanged: ctrl.manualMergeChanged
+                    scoreRushChanged: (ctrl.scoreRushChanged !== undefined && ctrl.scoreRushChanged !== null)
+                        ? ctrl.scoreRushChanged
+                        : ctrl.manualMergeChanged
                 };
                 // 重置标志
                 if (window._aiControl) {
                     window._aiControl.startClicked = false;
                     window._aiControl.autoRestartChanged = null;
+                    window._aiControl.scoreRushChanged = null;
                     window._aiControl.manualMergeChanged = null;
                 }
                 return result;
@@ -548,9 +563,9 @@ class MainWindow(QMainWindow):
         if auto_restart is not None:
             self.on_auto_restart_changed(auto_restart)
 
-        manual_merge = result.get('manualMergeChanged')
-        if manual_merge is not None:
-            self.on_manual_merge_changed(manual_merge)
+        score_rush = result.get('scoreRushChanged')
+        if score_rush is not None:
+            self.on_score_rush_changed(score_rush)
 
     # =========================================================================
     # AI 控制
@@ -568,6 +583,13 @@ class MainWindow(QMainWindow):
         if self.ai_running:
             return
 
+        if not self.score_rush_mode:
+            self._score_rush_active = False
+            self._score_rush_resume_ready = False
+        elif self._score_rush_resume_ready:
+            self._score_rush_active = True
+            self._score_rush_resume_ready = False
+
         self.ai_running = True
         self._step_active = False
         self._skip_merge_check = True  # 手动启动时跳过一次合并检测
@@ -579,7 +601,10 @@ class MainWindow(QMainWindow):
         # 初始化 AI 管理器
         self.ai_manager.initialize()
 
-        self.status_label.setText("AI 运行中")
+        if self._score_rush_active:
+            self.status_label.setText("AI 运行中（冲分）")
+        else:
+            self.status_label.setText("AI 运行中")
 
         # 启动第一步
         self._step_start()
@@ -601,13 +626,18 @@ class MainWindow(QMainWindow):
         """自动续开关切换"""
         self.auto_restart = enabled
 
-    def on_manual_merge_changed(self, enabled):
-        """合并暂停开关切换"""
-        self.manual_merge_mode = enabled
+    def on_score_rush_changed(self, enabled):
+        """冲分模式开关切换"""
+        self.score_rush_mode = enabled
+        if not enabled:
+            self._score_rush_resume_ready = False
+            self._score_rush_active = False
 
     def _should_pause_for_merge(self, board):
         """检测是否进入最终合并阶段，需要暂停 AI"""
-        if not self.manual_merge_mode:
+        if not self.score_rush_mode:
+            return False
+        if self._score_rush_active:
             return False
         required = {8192, 4096, 2048, 1024, 512, 256, 128, 64, 32}
         tiles = set()
@@ -616,6 +646,75 @@ class MainWindow(QMainWindow):
                 if val in required:
                     tiles.add(val)
         return required.issubset(tiles)
+
+    @staticmethod
+    def _count_tile(board, target):
+        count = 0
+        for row in board:
+            for val in row:
+                if val == target:
+                    count += 1
+        return count
+
+    def _select_score_rush_safe_move(self, board, result):
+        """
+        冲分阶段的安全步选择：
+        - 若 AI 推荐步不会产生新 16384，则沿用；
+        - 若会产生新 16384，则从安全步里挑一个启发式分数最高的替代步；
+        - 若没有安全步，返回 None 触发自动暂停。
+        """
+        if not (self.score_rush_mode and self._score_rush_active):
+            return result
+        if not board:
+            return result
+
+        move_name = result.get('move_name')
+        if not move_name:
+            return result
+
+        try:
+            board_int = board_to_int(board)
+            before_16384 = self._count_tile(board, 16384)
+            safe_candidates = []
+            current_move_is_safe = False
+
+            for move_idx, name in enumerate(DIRECTION_NAMES):
+                moved_int = execute_move(move_idx, board_int)
+                if moved_int == board_int:
+                    continue
+
+                moved_board = int_to_board(moved_int)
+                after_16384 = self._count_tile(moved_board, 16384)
+                if after_16384 > before_16384:
+                    continue
+
+                try:
+                    heur = float(score_heur_board(moved_int))
+                except Exception:
+                    heur = 0.0
+
+                safe_candidates.append((heur, move_idx))
+                if name == move_name:
+                    current_move_is_safe = True
+
+            if current_move_is_safe:
+                return result
+
+            if not safe_candidates:
+                return None
+
+            safe_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_idx = safe_candidates[0][1]
+
+            adjusted = dict(result)
+            adjusted['move'] = best_idx
+            adjusted['move_name'] = DIRECTION_NAMES[best_idx]
+            adjusted['move_arrow'] = DIRECTION_ARROWS[best_idx]
+            adjusted['score_rush_adjusted'] = True
+            return adjusted
+        except Exception as e:
+            print(f"[Main] 冲分安全步选择失败: {e}")
+            return result
 
     # =========================================================================
     # 链式游戏循环：每一步完成后才触发下一步
@@ -671,7 +770,8 @@ class MainWindow(QMainWindow):
                 self._skip_merge_check = False
             elif self._should_pause_for_merge(board):
                 self._step_active = False
-                self.stop_ai("检测到合并阶段，已切换手动模式")
+                self._score_rush_resume_ready = True
+                self.stop_ai("检测到合并阶段，已暂停；再次 Start 进入冲分")
                 return
 
             self.ai_manager.submit_task(board)
@@ -696,6 +796,19 @@ class MainWindow(QMainWindow):
 
         # 收到结果，停止轮询
         self._ai_poll_timer.stop()
+
+        # 冲分阶段：若 AI 推荐步会触发 16384，则改走安全替代步
+        if self._score_rush_active and self._last_board:
+            adjusted = self._select_score_rush_safe_move(self._last_board, result)
+            if adjusted is None:
+                self._step_active = False
+                self.stop_ai("冲分模式：仅剩 8192 终局合并步，已暂停等待手动接管")
+                return
+            if adjusted.get('score_rush_adjusted'):
+                print(
+                    f"[Main] 冲分模式替代步: {result.get('move_name')} -> {adjusted.get('move_name')}"
+                )
+            result = adjusted
 
         move_name = result.get('move_name')
         if move_name is None:
@@ -864,6 +977,8 @@ class MainWindow(QMainWindow):
     def on_game_over(self):
         """游戏结束处理"""
         self.stop_ai("游戏结束")
+        self._score_rush_resume_ready = False
+        self._score_rush_active = False
 
         # 记录分数
         self.page.runJavaScript(

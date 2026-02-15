@@ -15,8 +15,9 @@
         AUTO_RESTART_DELAY: 1500,
         STORAGE_KEY_SCORES: 'PythonAI_2048_ScoreHistory_v1',
         MAX_SCORE_RECORDS: 20,
-        STORAGE_KEY_MANUAL_MERGE: 'PythonAI_2048_ManualMerge_v1',
-        DEFAULT_MANUAL_MERGE: true,
+        STORAGE_KEY_SCORE_RUSH: 'PythonAI_2048_ScoreRush_v1',
+        STORAGE_KEY_MANUAL_MERGE_LEGACY: 'PythonAI_2048_ManualMerge_v1',
+        DEFAULT_SCORE_RUSH: true,
     };
 
     // ===================================================================================
@@ -59,17 +60,21 @@
         saveScoreHistory([]);
     }
 
-    function safeGetManualMerge() {
+    function safeGetScoreRush() {
         try {
-            const v = localStorage.getItem(CONFIG.STORAGE_KEY_MANUAL_MERGE);
+            let v = localStorage.getItem(CONFIG.STORAGE_KEY_SCORE_RUSH);
+            if (v === null) {
+                // 向后兼容旧版 key
+                v = localStorage.getItem(CONFIG.STORAGE_KEY_MANUAL_MERGE_LEGACY);
+            }
             if (v === 'true') return true;
             if (v === 'false') return false;
         } catch (e) {}
-        return CONFIG.DEFAULT_MANUAL_MERGE;
+        return CONFIG.DEFAULT_SCORE_RUSH;
     }
 
-    function safeSetManualMerge(enabled) {
-        try { localStorage.setItem(CONFIG.STORAGE_KEY_MANUAL_MERGE, enabled ? 'true' : 'false'); } catch (e) {}
+    function safeSetScoreRush(enabled) {
+        try { localStorage.setItem(CONFIG.STORAGE_KEY_SCORE_RUSH, enabled ? 'true' : 'false'); } catch (e) {}
     }
 
     // ===================================================================================
@@ -78,12 +83,12 @@
     class UIController {
         constructor() {
             this.autoRestart = safeGetAutoRestart();
-            this.manualMerge = safeGetManualMerge();
+            this.scoreRush = safeGetScoreRush();
             this.isRunning = false;
 
             this.startButton = null;
             this.autoRestartButton = null;
-            this.manualMergeButton = null;
+            this.scoreRushButton = null;
             this.displayPanel = null;
             this.scorePanel = null;
 
@@ -116,17 +121,18 @@
             };
             this.updateAutoRestartButton();
 
-            // --- 合并暂停按钮 ---
-            this.manualMergeButton = this.createButton('ai-manual-merge-button', '', {
-                top: '114px', backgroundColor: '#6b7280'
+            // --- 冲分模式按钮 ---
+            this.scoreRushButton = this.createButton('ai-score-rush-button', '', {
+                top: '114px', backgroundColor: '#6b7280', width: '140px', textAlign: 'center'
             });
-            this.manualMergeButton.onclick = () => {
-                this.toggleManualMerge();
+            this.scoreRushButton.onclick = () => {
+                this.toggleScoreRush();
                 window._aiControl = window._aiControl || {};
-                window._aiControl.manualMergeChanged = this.manualMerge;
-                console.log('[AI Bridge] Manual merge:', this.manualMerge);
+                window._aiControl.scoreRushChanged = this.scoreRush;
+                window._aiControl.manualMergeChanged = this.scoreRush; // legacy
+                console.log('[AI Bridge] Score rush:', this.scoreRush);
             };
-            this.updateManualMergeButton();
+            this.updateScoreRushButton();
 
             // --- 操作显示面板 ---
             this.displayPanel = document.createElement('div');
@@ -141,8 +147,11 @@
                 fontSize: '13px', lineHeight: '1.6'
             });
             this.displayPanel.innerHTML = `
-                <div style="font-weight:bold;margin-bottom:6px;color:#8f7a66;">AI 状态</div>
-                <div id="ai-status">● 已停止</div>
+                <div style="margin-bottom:4px;">
+                    <span style="font-weight:bold;color:#8f7a66;">AI 状态:</span>
+                    <span id="ai-status">● 已停止</span>
+                </div>
+                <div>模式: <span id="ai-mode">-</span></div>
                 <div>当前: <span id="ai-current">-</span></div>
                 <div>上步: <span id="ai-next">-</span></div>
                 <div style="font-size:11px;color:#aaa;margin-top:4px;">
@@ -150,17 +159,18 @@
                 </div>
             `;
             document.body.appendChild(this.displayPanel);
+            this.updateModeLabel();
 
             // --- 分数记录面板 ---
             this._scorePanelCollapsed = false;
-            this._scorePanelPos = { top: '290px', right: '10px', left: 'auto' };
+            this._scorePanelPos = { top: '294px', right: '10px', left: 'auto' };
 
             // 折叠时的小按钮
             this.scoreToggleBtn = document.createElement('button');
             this.scoreToggleBtn.id = 'ai-score-toggle';
             this.scoreToggleBtn.textContent = '📊';
             Object.assign(this.scoreToggleBtn.style, {
-                position: 'fixed', top: '290px', right: '10px', zIndex: '10000',
+                position: 'fixed', top: '294px', right: '10px', zIndex: '10000',
                 width: '36px', height: '36px', padding: '0',
                 fontSize: '18px', cursor: 'grab',
                 backgroundColor: '#8f7a66', color: '#f9f6f2',
@@ -207,7 +217,7 @@
             this.scorePanel = document.createElement('div');
             this.scorePanel.id = 'ai-score-panel';
             Object.assign(this.scorePanel.style, {
-                position: 'fixed', top: '290px', right: '10px', zIndex: '10000',
+                position: 'fixed', top: '294px', right: '10px', zIndex: '10000',
                 width: '240px', height: '300px', minWidth: '180px', minHeight: '80px',
                 backgroundColor: '#faf8ef', color: '#776e65',
                 border: '2px solid #bbada0', borderRadius: '6px',
@@ -382,15 +392,26 @@
             this.autoRestartButton.style.backgroundColor = this.autoRestart ? '#22c55e' : '#6b7280';
         }
 
-        toggleManualMerge() {
-            this.manualMerge = !this.manualMerge;
-            safeSetManualMerge(this.manualMerge);
-            this.updateManualMergeButton();
+        toggleScoreRush() {
+            this.scoreRush = !this.scoreRush;
+            safeSetScoreRush(this.scoreRush);
+            this.updateScoreRushButton();
         }
 
-        updateManualMergeButton() {
-            this.manualMergeButton.textContent = this.manualMerge ? '合并暂停：开' : '合并暂停：关';
-            this.manualMergeButton.style.backgroundColor = this.manualMerge ? '#f59e0b' : '#6b7280';
+        updateScoreRushButton() {
+            this.scoreRushButton.textContent = this.scoreRush ? '冲分暂停：开' : '冲分暂停：关';
+            this.scoreRushButton.style.backgroundColor = this.scoreRush ? '#f59e0b' : '#6b7280';
+            this.scoreRushButton.title = this.scoreRush
+                ? '检测到终局会自动暂停，再次 Start 进入冲分'
+                : '关闭后不再自动暂停，按默认策略直跑';
+            this.updateModeLabel();
+        }
+
+        updateModeLabel() {
+            const modeEl = document.getElementById('ai-mode');
+            if (modeEl) {
+                modeEl.textContent = this.scoreRush ? '冲分模式' : '直接获胜模式';
+            }
         }
 
         setRunning(running) {
@@ -412,11 +433,13 @@
             const nextEl = document.getElementById('ai-next');
             const depthEl = document.getElementById('ai-depth');
             const timeEl = document.getElementById('ai-time');
+            const modeEl = document.getElementById('ai-mode');
 
             if (currentEl) currentEl.textContent = current || '-';
             if (nextEl) nextEl.textContent = next || '-';
             if (depthEl) depthEl.textContent = depth || '-';
             if (timeEl) timeEl.textContent = time ? time.toFixed(0) : '-';
+            if (modeEl) modeEl.textContent = this.scoreRush ? '冲分模式' : '直接获胜模式';
         }
 
         updateScorePanel() {
@@ -581,14 +604,16 @@
 
         // 状态接口
         getAutoRestart: () => uiController.autoRestart,
-        getManualMerge: () => uiController.manualMerge
+        getScoreRush: () => uiController.scoreRush,
+        getManualMerge: () => uiController.scoreRush // legacy
     };
 
     // Python 端通过轮询 window._aiControl 读取按钮事件
     window._aiControl = {
         startClicked: false,
         autoRestartChanged: null,
-        manualMergeChanged: null
+        scoreRushChanged: null,
+        manualMergeChanged: null // legacy
     };
 
     console.log('%c[AI Bridge] 初始化完成，等待 Python 连接...', 'color: #22c55e; font-weight: bold;');

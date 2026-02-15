@@ -30,3 +30,7 @@ env/
 # PyInstaller
 build/
 dist/
+
+# Local userscripts (keep local, do not track in git)
+优化版 - AI for 2048 (Worker Pro).user.js
+原版 - 2048 奇美拉AI (后台运行版).js

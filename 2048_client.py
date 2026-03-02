@@ -622,6 +622,25 @@ class MainWindow(QMainWindow):
         # 更新 JS 端状态
         self.page.runJavaScript("window._aiBridge && window._aiBridge.setRunning(false)")
 
+        # 兜底：非“游戏结束”停止时，若棋盘已真正终局则补记分
+        if reason != "游戏结束":
+            self.page.runJavaScript(
+                "window._aiBridge ? (window._aiBridge.isTrueGameOver ? window._aiBridge.isTrueGameOver() : false) : false",
+                self._on_stop_game_over_checked
+            )
+
+    def _on_stop_game_over_checked(self, is_game_over):
+        """停止后检查是否已终局，避免漏记分。"""
+        if is_game_over:
+            self._record_current_score()
+
+    def _record_current_score(self):
+        """读取并写入当前分数到本地记录。"""
+        self.page.runJavaScript(
+            "window._aiBridge ? [window._aiBridge.getScore(), window._aiBridge.getMaxTile()] : [0, 0]",
+            self.on_score_received
+        )
+
     def on_auto_restart_changed(self, enabled):
         """自动续开关切换"""
         self.auto_restart = enabled
@@ -730,7 +749,7 @@ class MainWindow(QMainWindow):
         self._step_active = True
 
         self.page.runJavaScript(
-            "window._aiBridge ? window._aiBridge.isGameOver() : false",
+            "window._aiBridge ? (window._aiBridge.isTrueGameOver ? window._aiBridge.isTrueGameOver() : window._aiBridge.isGameOver()) : false",
             self._step_check_game_over
         )
 
@@ -981,10 +1000,7 @@ class MainWindow(QMainWindow):
         self._score_rush_active = False
 
         # 记录分数
-        self.page.runJavaScript(
-            "window._aiBridge ? [window._aiBridge.getScore(), window._aiBridge.getMaxTile()] : [0, 0]",
-            self.on_score_received
-        )
+        self._record_current_score()
 
     def on_score_received(self, result):
         """收到分数"""

@@ -554,6 +554,25 @@
             return game.gameOver || game.victory || game.over || game.won || game.isOver || game.ended || false;
         },
 
+        isTrueGameOver() {
+            const board = this.getBoard();
+            if (!board || !Array.isArray(board) || board.length === 0) return false;
+
+            const rowCount = board.length;
+            for (let r = 0; r < rowCount; r++) {
+                const row = board[r];
+                if (!Array.isArray(row)) return false;
+                const colCount = row.length;
+                for (let c = 0; c < colCount; c++) {
+                    const v = row[c];
+                    if (v === 0) return false;
+                    if (c + 1 < colCount && v === row[c + 1]) return false;
+                    if (r + 1 < rowCount && v === board[r + 1][c]) return false;
+                }
+            }
+            return true;
+        },
+
         isVictory() {
             const game = this.getGameInstance();
             return game?.victory || false;
@@ -592,6 +611,7 @@
         getBoard: () => JSON.stringify(GameInterface.getBoard()),
         getScore: () => GameInterface.getScore(),
         isGameOver: () => GameInterface.isGameOver(),
+        isTrueGameOver: () => GameInterface.isTrueGameOver(),
         isVictory: () => GameInterface.isVictory(),
         move: (dir) => GameInterface.move(dir),
         getMaxTile: () => GameInterface.getMaxTile(),
